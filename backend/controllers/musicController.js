@@ -3,6 +3,37 @@ const youtubedl = require('youtube-dl-exec');
 const https = require('https');
 const logger = require('../utils/logger');
 
+// Auto-convert cookies.json to cookies.txt if cookies.json exists
+try {
+  const path = require('path');
+  const fs = require('fs');
+  const jsonPath = path.join(__dirname, '..', 'cookies.json');
+  const txtPath = path.join(__dirname, '..', 'cookies.txt');
+
+  if (fs.existsSync(jsonPath)) {
+    const jsonStr = fs.readFileSync(jsonPath, 'utf8');
+    const cookies = JSON.parse(jsonStr);
+    
+    let netscapeText = '# Netscape HTTP Cookie File\n# This file was auto-generated from cookies.json\n\n';
+    for (const cookie of cookies) {
+      const domain = cookie.domain || '';
+      const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+      const pathVal = cookie.path || '/';
+      const secure = cookie.secure ? 'TRUE' : 'FALSE';
+      const expires = cookie.expirationDate ? Math.round(cookie.expirationDate) : 0;
+      const name = cookie.name || '';
+      const value = cookie.value || '';
+      
+      netscapeText += `${domain}\t${flag}\t${pathVal}\t${secure}\t${expires}\t${name}\t${value}\n`;
+    }
+    
+    fs.writeFileSync(txtPath, netscapeText, 'utf8');
+    logger.log('Successfully generated cookies.txt from cookies.json');
+  }
+} catch (err) {
+  logger.error('Error converting cookies.json to Netscape format:', err);
+}
+
 // User-Agent Rotation Helper
 const userAgents = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -70,13 +101,24 @@ exports.streamSong = async (req, res) => {
       logger.log(`Stream cache miss for video: ${id}. Resolving formats via yt-dlp...`);
       const videoUrl = `https://www.youtube.com/watch?v=${id}`;
       
-      // Fetch video formats from youtube-dl-exec
-      const output = await youtubedl(videoUrl, {
+      // Check if a cookies.txt file exists in the backend directory
+      const path = require('path');
+      const fs = require('fs');
+      
+      const options = {
         dumpSingleJson: true,
         noCheckCertificates: true,
         noWarnings: true,
         preferFreeFormats: true,
-      });
+      };
+
+      const cookiesPath = path.join(__dirname, '..', 'cookies.txt');
+      if (fs.existsSync(cookiesPath)) {
+        options.cookies = cookiesPath;
+      }
+
+      // Fetch video formats from youtube-dl-exec
+      const output = await youtubedl(videoUrl, options);
 
       let audioFormats = output.formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none' && f.ext === 'm4a');
       if (audioFormats.length === 0) {

@@ -256,6 +256,8 @@ class AudioProvider extends ChangeNotifier {
 
   List<Playlist> _playlists = [];
   bool _fetchingPlaylists = false;
+  String? _authError;
+  String? get authError => _authError;
 
   AudioProvider() {
     final handler = _audioHandler as MyAudioHandler;
@@ -280,13 +282,14 @@ class AudioProvider extends ChangeNotifier {
     _authChecking = true;
     notifyListeners();
     String googleClientId = AppConfig.googleWebClientId;
+    String envUrl = _backendUrl;
     try {
       final envString = await rootBundle.loadString('.env');
       final lines = const LineSplitter().convert(envString);
       for (var line in lines) {
         final trimmed = line.trim();
         if (trimmed.startsWith('BACKEND_URL=')) {
-          _backendUrl = trimmed.split('BACKEND_URL=')[1].trim();
+          envUrl = trimmed.split('BACKEND_URL=')[1].trim();
         } else if (trimmed.startsWith('GOOGLE_WEB_CLIENT_ID=')) {
           googleClientId = trimmed.split('GOOGLE_WEB_CLIENT_ID=')[1].trim();
         }
@@ -294,6 +297,17 @@ class AudioProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('No .env file found or failed to load. Using defaults: $e');
     }
+
+    _backendUrl = envUrl;
+
+    // Force override cached backend URL if developer updated .env configuration
+    try {
+      final lastEnvUrl = await _storage.read(key: 'env_backend_url');
+      if (lastEnvUrl != envUrl) {
+        await _storage.write(key: 'env_backend_url', value: envUrl);
+        await _storage.write(key: 'backend_url', value: envUrl);
+      }
+    } catch (_) {}
 
     _googleSignIn = GoogleSignIn(
       serverClientId: googleClientId,
@@ -358,11 +372,12 @@ class AudioProvider extends ChangeNotifier {
 
   Future<bool> loginWithGoogle() async {
     _isLoading = true;
+    _authError = null;
     notifyListeners();
     try {
       final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
-        debugPrint('Google Sign-In returned null. Check package name/SHA-1 setup.');
+        _authError = 'Google Sign-In was cancelled by the user.';
         _isLoading = false;
         notifyListeners();
         return false;
@@ -372,14 +387,14 @@ class AudioProvider extends ChangeNotifier {
       final String? idToken = googleAuth.idToken;
 
       if (idToken == null) {
-        throw Exception('Failed to obtain Google ID Token');
+        throw Exception('Failed to retrieve Google ID Token.');
       }
 
       final response = await http.post(
         Uri.parse('$_backendUrl/api/auth/google'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'idToken': idToken}),
-      );
+      ).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -392,9 +407,16 @@ class AudioProvider extends ChangeNotifier {
 
         fetchPlaylists();
         return true;
+      } else {
+        try {
+          final body = jsonDecode(response.body);
+          _authError = 'Server: ${body['error'] ?? response.reasonPhrase}';
+        } catch (_) {
+          _authError = 'Server returned status ${response.statusCode}';
+        }
       }
     } catch (e) {
-      debugPrint('Google Login error: $e');
+      _authError = 'Error: $e';
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -865,9 +887,12 @@ class _LoginScreenState extends State<LoginScreen> {
               ElevatedButton.icon(
                 onPressed: () async {
                   final success = await provider.loginWithGoogle();
-                  if (!success) {
+                   if (!success) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Failed to sign in. Please check your Google Account / network connection.')),
+                      SnackBar(
+                        content: Text(provider.authError ?? 'Failed to sign in. Please try again.'),
+                        duration: const Duration(seconds: 5),
+                      ),
                     );
                   }
                 },
