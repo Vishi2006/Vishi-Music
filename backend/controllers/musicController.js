@@ -105,6 +105,8 @@ exports.streamSong = async (req, res) => {
         dumpSingleJson: true,
         noCheckCertificates: true,
         noWarnings: true,
+        remoteComponents: 'ejs:github',
+        jsRuntimes: 'node',
       };
 
       let output;
