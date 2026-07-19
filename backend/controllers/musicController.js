@@ -101,24 +101,35 @@ exports.streamSong = async (req, res) => {
       logger.log(`Stream cache miss for video: ${id}. Resolving formats via yt-dlp...`);
       const videoUrl = `https://www.youtube.com/watch?v=${id}`;
       
-      // Check if a cookies.txt file exists in the backend directory
-      const path = require('path');
-      const fs = require('fs');
-      
-      const options = {
+      const optionsWithoutCookies = {
         dumpSingleJson: true,
         noCheckCertificates: true,
         noWarnings: true,
-        preferFreeFormats: true,
       };
 
-      const cookiesPath = path.join(__dirname, '..', 'cookies.txt');
-      if (fs.existsSync(cookiesPath)) {
-        options.cookies = cookiesPath;
-      }
+      let output;
+      try {
+        // Try without cookies first
+        output = await youtubedl(videoUrl, optionsWithoutCookies);
+      } catch (err) {
+        const errMsg = err.message || '';
+        const hasBotBlock = errMsg.includes('Sign in to confirm') || errMsg.includes('confirm you\'re not a bot');
+        
+        const path = require('path');
+        const fs = require('fs');
+        const cookiesPath = path.join(__dirname, '..', 'cookies.txt');
 
-      // Fetch video formats from youtube-dl-exec
-      const output = await youtubedl(videoUrl, options);
+        if (hasBotBlock && fs.existsSync(cookiesPath)) {
+          logger.log(`Bot block detected for video: ${id}. Retrying with cookies...`);
+          const optionsWithCookies = {
+            ...optionsWithoutCookies,
+            cookies: cookiesPath,
+          };
+          output = await youtubedl(videoUrl, optionsWithCookies);
+        } else {
+          throw err;
+        }
+      }
 
       let audioFormats = output.formats.filter(f => f.acodec !== 'none' && f.vcodec === 'none' && f.ext === 'm4a');
       if (audioFormats.length === 0) {
